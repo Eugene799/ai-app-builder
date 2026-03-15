@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { callZo } from "./backend-lib/zo-api";
+import { getProvider } from "./backend-lib/ai-providers";
 import { Database } from "bun:sqlite";
 import { mkdir, readdir, writeFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -38,14 +39,30 @@ db.exec(`
   )
 `);
 
-// In-memory build status tracking
+db.exec(`
+  CREATE TABLE IF NOT EXISTS logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT,
+    message TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+// In-memory build status tracking (keeping for active sessions, but backing with SQLite)
 const buildStatus = new Map<string, { logs: string[]; status: string; url?: string }>();
 
 // Helper to add logs
 function addLog(appId: string, message: string) {
+  const formattedMessage = `[${new Date().toISOString()}] ${message}`;
+  
+  // Update in-memory
   const status = buildStatus.get(appId) || { logs: [], status: "pending" };
-  status.logs.push(`[${new Date().toISOString()}] ${message}`);
+  status.logs.push(formattedMessage);
   buildStatus.set(appId, status);
+  
+  // Persist to SQLite
+  db.query("INSERT INTO logs (app_id, message) VALUES (?, ?)").run(appId, formattedMessage);
+  
   console.log(`[${appId}] ${message}`);
 }
 
@@ -86,27 +103,33 @@ app.delete("/api/apps/:id", async (c) => {
 // Build app endpoint
 app.post("/api/build", async (c) => {
   const body = await c.req.json();
-  const { prompt, config: appConfig } = body;
+  const { prompt, config: appConfig, provider = "openai", model } = body;
   
   const appId = randomUUID().slice(0, 8);
   buildStatus.set(appId, { logs: [], status: "building" });
   
-  addLog(appId, "Starting AI code generation...");
+  addLog(appId, `Starting AI code generation with ${provider}...`);
   addLog(appId, `App type: ${appConfig.type}`);
   addLog(appId, `Database: ${appConfig.database}`);
+  if (appConfig.blockchain !== "none") addLog(appId, `Blockchain: ${appConfig.blockchain}`);
   
   try {
-    // Generate app using Zo AI
-    const aiPrompt = `
-Generate a complete ${appConfig.type} application based on this description:
-"${prompt}"
-
+    let systemPrompt = `You are an expert full-stack developer and Web3 engineer.
+Generate a complete ${appConfig.type} application based on the user's description.
 Requirements:
 - Type: ${appConfig.type} (web, api, dapp, or ai)
 - Database: ${appConfig.database}
 - Blockchain: ${appConfig.blockchain !== "none" ? appConfig.blockchain : "none"}
 - Authentication: ${appConfig.auth ? "yes" : "no"}
 - AI Features: ${appConfig.aiFeatures ? "yes" : "no"}
+
+${appConfig.type === 'dapp' ? `
+SPECIAL DAPP REQUIREMENTS:
+- If Blockchain is Ethereum/Polygon: Use Solidity for smart contracts. Provide a Hardhat or Foundry project structure.
+- If Blockchain is Solana: Use Anchor (Rust) for smart contracts.
+- Frontend: Must use RainbowKit and Wagmi for wallet connections.
+- Ensure you provide at least one sample smart contract and the corresponding frontend hooks to interact with it.
+` : ''}
 
 Generate a complete application with:
 1. Main server/application file
@@ -130,33 +153,38 @@ Respond with a JSON object containing:
 }
 `;
 
-    addLog(appId, "Calling AI to generate code...");
+    addLog(appId, `Calling ${provider} to generate code...`);
     
-    const aiResponse = await callZo(aiPrompt, {
-      outputFormat: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          description: { type: "string" },
-          files: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                path: { type: "string" },
-                content: { type: "string" }
+    let generated;
+    if (provider === "zo") {
+      const aiResponse = await callZo(systemPrompt + "\n\nUser Prompt: " + prompt, {
+        outputFormat: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            description: { type: "string" },
+            files: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  path: { type: "string" },
+                  content: { type: "string" }
+                }
               }
-            }
-          },
-          dependencies: { type: "array", items: { type: "string" } },
-          envVars: { type: "array", items: { type: "string" } },
-          port: { type: "number" },
-          deployCommand: { type: "string" }
+            },
+            dependencies: { type: "array", items: { type: "string" } },
+            envVars: { type: "array", items: { type: "string" } },
+            port: { type: "number" },
+            deployCommand: { type: "string" }
+          }
         }
-      }
-    });
-
-    const generated = aiResponse.output as any;
+      });
+      generated = aiResponse.output as any;
+    } else {
+      const aiProvider = getProvider(provider);
+      generated = await aiProvider.generateResponse(systemPrompt + "\n\nUser Prompt: " + prompt, model, true);
+    }
     
     addLog(appId, `Generated ${generated.files?.length || 0} files`);
     
@@ -306,7 +334,17 @@ app.get("/api/status/:id", (c) => {
   
   if (!app_data) return c.json({ error: "App not found" }, 404);
   
-  const status = buildStatus.get(id) || { logs: [], status: (app_data as any).status };
+  let status = buildStatus.get(id);
+  
+  if (!status) {
+    // If not in memory, fetch logs from database
+    const logs = db.query("SELECT message FROM logs WHERE app_id = ? ORDER BY timestamp ASC").all(id) as { message: string }[];
+    status = {
+      logs: logs.map(l => l.message),
+      status: (app_data as any).status,
+      url: (app_data as any).url
+    };
+  }
   
   return c.json({
     id,
