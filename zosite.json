@@ -1,0 +1,15 @@
+{
+  "name": "ai-app-builder",
+  "local_port": 54512,
+  "entrypoint": "bun run dev",
+  "publish": {
+    "label": "ai-app-builder",
+    "type": "http",
+    "entrypoint": "bun run prod",
+    "published_port": 52491,
+    "env": {
+      "NODE_ENV": "production",
+      "ZO_CLIENT_IDENTITY_TOKEN": "none"
+    }
+  }
+}
