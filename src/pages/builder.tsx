@@ -25,6 +25,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "react-router-dom";
+import { ModelSelector } from "@/components/model-selector";
+import { downloadFilesAsZip } from "@/lib/zip-utils";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 type BuildStep = "input" | "generating" | "review" | "deploying" | "complete";
 type AppType = "web" | "api" | "dapp" | "ai";
@@ -60,6 +64,8 @@ export default function Builder() {
     auth: false,
     aiFeatures: false,
   });
+  const [selectedModel, setSelectedModel] = useState("gpt-4o");
+  const [selectedProvider, setSelectedProvider] = useState("openai");
   const [generatedApp, setGeneratedApp] = useState<GeneratedApp | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -81,20 +87,25 @@ export default function Builder() {
     addLog(`App type: ${config.type}`);
     addLog(`Database: ${config.database}`);
     if (config.blockchain !== "none") addLog(`Blockchain: ${config.blockchain}`);
-    if (config.auth) addLog("Auth: Enabled");
-    if (config.aiFeatures) addLog("AI Features: Enabled");
+    addLog(`AI Model: ${selectedModel} (${selectedProvider})`);
 
     try {
       const response = await fetch("/api/build", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, config }),
+        body: JSON.stringify({ 
+          prompt, 
+          config,
+          provider: selectedProvider,
+          model: selectedModel
+        }),
       });
 
       if (!response.ok) throw new Error("Generation failed");
 
       const data = await response.json();
       setGeneratedApp(data.app);
+      if (data.app.files.length > 0) setSelectedFile(data.app.files[0].path);
       addLog(`Generated ${data.app.files.length} files`);
       addLog(`App ID: ${data.app.id}`);
       setStep("review");
@@ -137,21 +148,38 @@ export default function Builder() {
     toast({ title: "Copied to clipboard" });
   };
 
-  const downloadFiles = () => {
+  const downloadFiles = async () => {
     if (!generatedApp) return;
     addLog("Downloading source files...");
-    // Create a zip file download
+    await downloadFilesAsZip(generatedApp.name, generatedApp.files);
     toast({ title: "Download started" });
   };
 
   const examples = [
-    "A task management app with real-time collaboration",
+    "A voting dApp with wallet connection",
     "A crypto portfolio tracker with price alerts",
+    "A task management app with real-time collaboration",
     "An AI chatbot with memory and file uploads",
     "A blog platform with markdown editing",
-    "A voting dApp with wallet connection",
     "An image gallery with AI-powered search",
   ];
+
+  const getFileLanguage = (path: string) => {
+    const ext = path.split('.').pop()?.toLowerCase();
+    switch (ext) {
+      case 'ts':
+      case 'tsx': return 'tsx';
+      case 'js':
+      case 'jsx': return 'jsx';
+      case 'sol': return 'solidity';
+      case 'rs': return 'rust';
+      case 'json': return 'json';
+      case 'md': return 'markdown';
+      case 'css': return 'css';
+      case 'html': return 'html';
+      default: return 'javascript';
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -206,7 +234,7 @@ export default function Builder() {
                   />
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
                   <div className="space-y-2">
                     <label className="text-xs text-slate-500 uppercase tracking-wider">App Type</label>
                     <div className="grid grid-cols-2 gap-2">
@@ -231,6 +259,14 @@ export default function Builder() {
                       ))}
                     </div>
                   </div>
+
+                  <ModelSelector 
+                    value={selectedModel} 
+                    onChange={(m, p) => {
+                      setSelectedModel(m);
+                      setSelectedProvider(p);
+                    }} 
+                  />
 
                   <div className="space-y-2">
                     <label className="text-xs text-slate-500 uppercase tracking-wider">Database</label>
@@ -446,13 +482,24 @@ export default function Builder() {
                     ))}
                   </div>
                 </CardHeader>
-                <CardContent>
-                  <ScrollArea className="h-[500px] rounded-lg bg-slate-950 p-4">
-                    <pre className="font-mono text-sm text-slate-300">
+                <CardContent className="p-0">
+                  <ScrollArea className="h-[600px] w-full bg-slate-950">
+                    <SyntaxHighlighter
+                      language={selectedFile ? getFileLanguage(selectedFile) : 'javascript'}
+                      style={vscDarkPlus}
+                      customStyle={{
+                        margin: 0,
+                        padding: '1.5rem',
+                        fontSize: '0.875rem',
+                        lineHeight: '1.5',
+                        background: 'transparent',
+                      }}
+                      showLineNumbers={true}
+                    >
                       {selectedFile
-                        ? generatedApp.files.find((f) => f.path === selectedFile)?.content
-                        : generatedApp.files[0]?.content}
-                    </pre>
+                        ? generatedApp.files.find((f) => f.path === selectedFile)?.content || ""
+                        : generatedApp.files[0]?.content || ""}
+                    </SyntaxHighlighter>
                   </ScrollArea>
                 </CardContent>
               </Card>
