@@ -1,2 +1,46 @@
+# Dependencies
 node_modules/
 dist/
+
+# Build outputs
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Database
+*.sqlite
+*.sqlite3
+*.db
+
+# Projects (generated apps)
+projects/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+
+# Misc
+.cache/
+temp/
+tmp/
+*.tmp
