@@ -8,29 +8,31 @@ import {
   Sparkles,
   Trash2,
   ExternalLink,
-  ChevronRight
+  ChevronRight,
+  Zap as ZapIcon,
+  Workflow
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "sonner";
 import { Link } from "react-router-dom";
+import { supabase } from "@/lib/supabase";
 
 interface AppRecord {
   id: string;
   name: string;
   description: string;
   type: string;
-  status: "building" | "deployed" | "failed";
-  createdAt: string;
+  status: "building" | "deployed" | "failed" | "ready";
+  created_at: string;
   url?: string;
 }
 
 export default function History() {
   const [apps, setApps] = useState<AppRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const { toast } = useToast();
 
   useEffect(() => {
     fetchApps();
@@ -38,11 +40,14 @@ export default function History() {
 
   const fetchApps = async () => {
     try {
-      const response = await fetch("/api/apps");
+      const { data: { session } } = await supabase.auth.getSession();
+      const response = await fetch("/api/apps", {
+        headers: { Authorization: `Bearer ${session?.access_token}` }
+      });
       const data = await response.json();
       setApps(data.apps || []);
     } catch (error) {
-      toast({ title: "Failed to load apps", variant: "destructive" });
+      toast.error("Failed to load apps");
     } finally {
       setLoading(false);
     }
@@ -50,17 +55,22 @@ export default function History() {
 
   const deleteApp = async (id: string) => {
     try {
-      await fetch(`/api/apps/${id}`, { method: "DELETE" });
+      const { data: { session } } = await supabase.auth.getSession();
+      await fetch(`/api/apps/${id}`, { 
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${session?.access_token}` }
+      });
       setApps(apps.filter((a) => a.id !== id));
-      toast({ title: "App deleted" });
+      toast.success("App deleted");
     } catch (error) {
-      toast({ title: "Failed to delete", variant: "destructive" });
+      toast.error("Failed to delete");
     }
   };
 
   const getIcon = (type: string) => {
     switch (type) {
-      case "dapp": return Shield;
+      case "automation": return ZapIcon;
+      case "workflow": return Workflow;
       case "api": return Code;
       case "ai": return Sparkles;
       default: return Globe;
@@ -70,6 +80,7 @@ export default function History() {
   const getStatusColor = (status: string) => {
     switch (status) {
       case "deployed": return "bg-emerald-500/20 text-emerald-400 border-emerald-500/30";
+      case "ready": return "bg-blue-500/20 text-blue-400 border-blue-500/30";
       case "building": return "bg-amber-500/20 text-amber-400 border-amber-500/30";
       default: return "bg-red-500/20 text-red-400 border-red-500/30";
     }
@@ -128,7 +139,7 @@ export default function History() {
                               {app.status}
                             </Badge>
                             <span className="text-xs text-slate-500">
-                              {new Date(app.createdAt).toLocaleDateString()}
+                              {new Date(app.created_at).toLocaleDateString()}
                             </span>
                           </div>
                         </div>

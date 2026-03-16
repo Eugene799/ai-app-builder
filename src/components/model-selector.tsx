@@ -9,7 +9,7 @@ const models = [
   { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet", provider: "OpenRouter" },
   { id: "google/gemini-flash-1.5", name: "Gemini 1.5 Flash", provider: "OpenRouter" },
   { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro", provider: "Gemini" },
-  { id: "zo", name: "Zo AI", provider: "Zo" }
+  { id: "zo", name: "AutoAI Engine", provider: "AutoAI" }
 ];
 
 export function ModelSelector({ value, onChange }: { value: string, onChange: (val: string, provider: string) => void }) {

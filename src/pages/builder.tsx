@@ -15,30 +15,35 @@ import {
   Layers,
   Zap,
   History,
-  Wand2
+  Wand2,
+  Settings,
+  CreditCard,
+  LogOut,
+  Workflow,
+  Zap as ZapIcon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { useToast } from "@/hooks/use-toast";
-import { Link } from "react-router-dom";
+import { toast } from "sonner";
+import { Link, useNavigate } from "react-router-dom";
 import { ModelSelector } from "@/components/model-selector";
 import { downloadFilesAsZip } from "@/lib/zip-utils";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { useAuth } from "@/hooks/use-auth";
+import { supabase } from "@/lib/supabase";
 
 type BuildStep = "input" | "generating" | "review" | "deploying" | "complete";
-type AppType = "web" | "api" | "dapp" | "ai";
+type AppType = "web" | "api" | "automation" | "workflow";
 type DatabaseType = "sqlite" | "postgresql" | "none";
-type Blockchain = "ethereum" | "solana" | "polygon" | "none";
 
 interface AppConfig {
   type: AppType;
   database: DatabaseType;
-  blockchain: Blockchain;
   auth: boolean;
   aiFeatures: boolean;
 }
@@ -55,12 +60,13 @@ interface GeneratedApp {
 }
 
 export default function Builder() {
+  const { user, signOut } = useAuth();
+  const navigate = useNavigate();
   const [step, setStep] = useState<BuildStep>("input");
   const [prompt, setPrompt] = useState("");
   const [config, setConfig] = useState<AppConfig>({
     type: "web",
     database: "sqlite",
-    blockchain: "none",
     auth: false,
     aiFeatures: false,
   });
@@ -69,7 +75,35 @@ export default function Builder() {
   const [generatedApp, setGeneratedApp] = useState<GeneratedApp | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const { toast } = useToast();
+  const [profile, setProfile] = useState<any>(null);
+  const [connectors, setConnectors] = useState<any[]>([]);
+
+  useEffect(() => {
+    fetchProfile();
+    fetchConnectors();
+  }, []);
+
+  const fetchProfile = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const response = await fetch("/api/profile", {
+      headers: { Authorization: `Bearer ${session?.access_token}` }
+    });
+    if (response.ok) {
+      const data = await response.json();
+      setProfile(data.profile);
+    }
+  };
+
+  const fetchConnectors = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const response = await fetch("/api/connectors", {
+      headers: { Authorization: `Bearer ${session?.access_token}` }
+    });
+    if (response.ok) {
+      const data = await response.json();
+      setConnectors(data.connectors || []);
+    }
+  };
 
   const addLog = (message: string) => {
     setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
@@ -77,7 +111,12 @@ export default function Builder() {
 
   const generateApp = async () => {
     if (!prompt.trim()) {
-      toast({ title: "Please describe your app", variant: "destructive" });
+      toast.error("Please describe your app");
+      return;
+    }
+
+    if (!profile || profile.credits < 1) {
+      toast.error("Insufficient credits. Please purchase more credits.");
       return;
     }
 
@@ -86,13 +125,16 @@ export default function Builder() {
     addLog("Initializing AI code generation...");
     addLog(`App type: ${config.type}`);
     addLog(`Database: ${config.database}`);
-    if (config.blockchain !== "none") addLog(`Blockchain: ${config.blockchain}`);
     addLog(`AI Model: ${selectedModel} (${selectedProvider})`);
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
       const response = await fetch("/api/build", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session?.access_token}`
+        },
         body: JSON.stringify({ 
           prompt, 
           config,
@@ -101,7 +143,10 @@ export default function Builder() {
         }),
       });
 
-      if (!response.ok) throw new Error("Generation failed");
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Generation failed");
+      }
 
       const data = await response.json();
       setGeneratedApp(data.app);
@@ -109,11 +154,32 @@ export default function Builder() {
       addLog(`Generated ${data.app.files.length} files`);
       addLog(`App ID: ${data.app.id}`);
       setStep("review");
-      toast({ title: "App generated successfully!" });
-    } catch (error) {
-      addLog(`Error: ${error}`);
-      toast({ title: "Generation failed", variant: "destructive" });
+      toast.success("App generated successfully!");
+      fetchProfile(); // Update credits
+    } catch (error: any) {
+      addLog(`Error: ${error.message}`);
+      toast.error(error.message);
       setStep("input");
+    }
+  };
+
+  const buyCredits = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const response = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify({}),
+      });
+      const data = await response.json();
+      if (data.url) {
+        window.location.href = data.url;
+      }
+    } catch (error) {
+      toast.error("Failed to initiate checkout");
     }
   };
 
@@ -124,9 +190,13 @@ export default function Builder() {
     addLog("Starting deployment...");
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
       const response = await fetch("/api/deploy", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session?.access_token}`
+        },
         body: JSON.stringify({ appId: generatedApp.id }),
       });
 
@@ -135,33 +205,33 @@ export default function Builder() {
       const data = await response.json();
       addLog(`Deployed to: ${data.url}`);
       setStep("complete");
-      toast({ title: "App deployed!", description: data.url });
-    } catch (error) {
-      addLog(`Error: ${error}`);
-      toast({ title: "Deployment failed", variant: "destructive" });
+      toast.success("App deployed!");
+    } catch (error: any) {
+      addLog(`Error: ${error.message}`);
+      toast.error("Deployment failed");
       setStep("review");
     }
   };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-    toast({ title: "Copied to clipboard" });
+    toast.success("Copied to clipboard");
   };
 
   const downloadFiles = async () => {
     if (!generatedApp) return;
     addLog("Downloading source files...");
     await downloadFilesAsZip(generatedApp.name, generatedApp.files);
-    toast({ title: "Download started" });
+    toast.success("Download started");
   };
 
   const examples = [
-    "A voting dApp with wallet connection",
-    "A crypto portfolio tracker with price alerts",
-    "A task management app with real-time collaboration",
-    "An AI chatbot with memory and file uploads",
-    "A blog platform with markdown editing",
-    "An image gallery with AI-powered search",
+    "A Slack bot that summarizes GitHub PRs",
+    "A Discord bot that alerts on Twitter mentions",
+    "A Notion automation to sync with Slack",
+    "A GitHub action that posts to Discord",
+    "An AI workflow that cleans up Notion databases",
+    "An automation that cross-posts from Twitter to Slack",
   ];
 
   const getFileLanguage = (path: string) => {
@@ -171,12 +241,11 @@ export default function Builder() {
       case 'tsx': return 'tsx';
       case 'js':
       case 'jsx': return 'jsx';
-      case 'sol': return 'solidity';
-      case 'rs': return 'rust';
       case 'json': return 'json';
       case 'md': return 'markdown';
       case 'css': return 'css';
       case 'html': return 'html';
+      case 'py': return 'python';
       default: return 'javascript';
     }
   };
@@ -191,21 +260,35 @@ export default function Builder() {
               <Sparkles className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="font-bold text-lg">AI App Builder</h1>
-              <p className="text-xs text-slate-400">Build & deploy full-stack apps with AI</p>
+              <h1 className="font-bold text-lg">AutoAI</h1>
+              <p className="text-xs text-slate-400">Automation & Workflow Builder</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Link to="/history">
-              <Button variant="ghost" size="sm" className="gap-2">
-                <History className="w-4 h-4" />
-                History
-              </Button>
-            </Link>
-            <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
-              <Zap className="w-3 h-3 mr-1" />
-              Powered by Zo
-            </Badge>
+          <div className="flex items-center gap-4">
+            <div className="hidden md:flex items-center gap-4 mr-4">
+              <Link to="/history">
+                <Button variant="ghost" size="sm" className="gap-2">
+                  <History className="w-4 h-4" />
+                  History
+                </Button>
+              </Link>
+              <Link to="/connectors">
+                <Button variant="ghost" size="sm" className="gap-2">
+                  <Settings className="w-4 h-4" />
+                  Connectors
+                </Button>
+              </Link>
+              <div className="flex items-center gap-2 bg-slate-800/50 px-3 py-1 rounded-full border border-slate-700">
+                <CreditCard className="w-3.5 h-3.5 text-violet-400" />
+                <span className="text-xs font-medium">{profile?.credits ?? 0} Credits</span>
+                <button onClick={buyCredits} className="text-[10px] bg-violet-600 px-1.5 py-0.5 rounded hover:bg-violet-500 transition-colors">
+                  Buy
+                </button>
+              </div>
+            </div>
+            <Button variant="ghost" size="icon" onClick={() => signOut()}>
+              <LogOut className="w-4 h-4" />
+            </Button>
           </div>
         </div>
       </header>
@@ -215,34 +298,34 @@ export default function Builder() {
           <div className="max-w-3xl mx-auto space-y-8">
             <div className="text-center space-y-4">
               <h2 className="text-4xl font-bold bg-gradient-to-r from-violet-400 via-fuchsia-400 to-pink-400 bg-clip-text text-transparent">
-                What do you want to build?
+                What automation should we build?
               </h2>
               <p className="text-slate-400 text-lg">
-                Describe your app idea and AI will generate a complete full-stack application
+                Describe your workflow and AI will connect your favorite platforms
               </p>
             </div>
 
             <Card className="bg-slate-900/50 border-slate-800">
               <CardContent className="p-6 space-y-6">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-300">Describe your app</label>
+                  <label className="text-sm font-medium text-slate-300">Describe your workflow</label>
                   <Textarea
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
-                    placeholder="I want to build a..."
+                    placeholder="When a new PR is opened on GitHub, send a summary to Slack..."
                     className="min-h-[120px] bg-slate-950 border-slate-800 text-slate-100 placeholder:text-slate-600 resize-none"
                   />
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
                   <div className="space-y-2">
-                    <label className="text-xs text-slate-500 uppercase tracking-wider">App Type</label>
+                    <label className="text-xs text-slate-500 uppercase tracking-wider">Type</label>
                     <div className="grid grid-cols-2 gap-2">
                       {[
+                        { key: "automation", icon: ZapIcon, label: "Auto" },
+                        { key: "workflow", icon: Workflow, label: "Flow" },
                         { key: "web", icon: Globe, label: "Web" },
                         { key: "api", icon: Code, label: "API" },
-                        { key: "dapp", icon: Shield, label: "DApp" },
-                        { key: "ai", icon: Sparkles, label: "AI" },
                       ].map(({ key, icon: Icon, label }) => (
                         <button
                           key={key}
@@ -292,67 +375,36 @@ export default function Builder() {
                     </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="text-xs text-slate-500 uppercase tracking-wider">Blockchain</label>
-                    <div className="grid grid-cols-1 gap-2">
-                      {[
-                        { key: "none", label: "None" },
-                        { key: "ethereum", label: "Ethereum" },
-                        { key: "solana", label: "Solana" },
-                        { key: "polygon", label: "Polygon" },
-                      ].map(({ key, label }) => (
-                        <button
-                          key={key}
-                          onClick={() => setConfig((c) => ({ ...c, blockchain: key as Blockchain }))}
-                          className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-all ${
-                            config.blockchain === key
-                              ? "bg-violet-500/20 border-violet-500/50 text-violet-300"
-                              : "bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-700"
-                          }`}
-                        >
-                          <Shield className="w-4 h-4" />
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-xs text-slate-500 uppercase tracking-wider">Features</label>
-                    <div className="space-y-2">
-                      <button
-                        onClick={() => setConfig((c) => ({ ...c, auth: !c.auth }))}
-                        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-all ${
-                          config.auth
-                            ? "bg-violet-500/20 border-violet-500/50 text-violet-300"
-                            : "bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-700"
-                        }`}
-                      >
-                        <CheckCircle className={`w-4 h-4 ${config.auth ? "opacity-100" : "opacity-50"}`} />
-                        Authentication
-                      </button>
-                      <button
-                        onClick={() => setConfig((c) => ({ ...c, aiFeatures: !c.aiFeatures }))}
-                        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-all ${
-                          config.aiFeatures
-                            ? "bg-violet-500/20 border-violet-500/50 text-violet-300"
-                            : "bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-700"
-                        }`}
-                      >
-                        <Sparkles className={`w-4 h-4 ${config.aiFeatures ? "opacity-100" : "opacity-50"}`} />
-                        AI Features
-                      </button>
+                  <div className="space-y-2 lg:col-span-2">
+                    <label className="text-xs text-slate-500 uppercase tracking-wider">Connected Services</label>
+                    <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 min-h-[82px]">
+                      {connectors.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {connectors.map(c => (
+                            <Badge key={c.provider} variant="secondary" className="capitalize bg-slate-800 text-slate-300">
+                              {c.provider}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-2">
+                          <p className="text-[10px] text-slate-600 mb-2">No connectors linked</p>
+                          <Link to="/connectors">
+                            <Button variant="outline" size="xs" className="h-6 text-[10px]">Link Services</Button>
+                          </Link>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
 
                 <Button
                   onClick={generateApp}
-                  disabled={!prompt.trim()}
+                  disabled={!prompt.trim() || (profile && profile.credits < 1)}
                   className="w-full h-14 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white text-lg font-semibold"
                 >
                   <Wand2 className="w-5 h-5 mr-2" />
-                  Generate App
+                  Generate Automation (1 Credit)
                 </Button>
               </CardContent>
             </Card>
@@ -513,14 +565,14 @@ export default function Builder() {
               <CheckCircle className="w-10 h-10 text-emerald-500" />
             </div>
             <div>
-              <h2 className="text-3xl font-bold mb-2">App Deployed!</h2>
-              <p className="text-slate-400">Your app is now live and ready to use</p>
+              <h2 className="text-3xl font-bold mb-2">Automation Deployed!</h2>
+              <p className="text-slate-400">Your automation is now live and ready to use</p>
             </div>
             <Card className="bg-slate-900/50 border-slate-800">
               <CardContent className="p-6">
                 <div className="flex items-center justify-between p-4 bg-slate-950 rounded-lg">
-                  <code className="text-violet-400">https://{generatedApp.id}.zo.space</code>
-                  <Button variant="ghost" size="sm" onClick={() => copyToClipboard(`https://${generatedApp.id}.zo.space`)}>
+                  <code className="text-violet-400">https://{generatedApp.id}.autoai.space</code>
+                  <Button variant="ghost" size="sm" onClick={() => copyToClipboard(`https://${generatedApp.id}.autoai.space`)}>
                     <Copy className="w-4 h-4" />
                   </Button>
                 </div>
@@ -528,7 +580,7 @@ export default function Builder() {
             </Card>
             <div className="flex gap-4 justify-center">
               <Button asChild className="bg-violet-600 hover:bg-violet-500">
-                <a href={`https://${generatedApp.id}.zo.space`} target="_blank" rel="noopener noreferrer">
+                <a href={`https://${generatedApp.id}.autoai.space`} target="_blank" rel="noopener noreferrer">
                   <Globe className="w-4 h-4 mr-2" />
                   Open App
                 </a>
