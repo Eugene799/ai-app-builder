@@ -14,11 +14,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "sonner";
+import { supabase } from "@/lib/supabase";
 
 interface DeployStatus {
   id: string;
-  status: "pending" | "building" | "deployed" | "failed";
+  status: "pending" | "building" | "deployed" | "failed" | "ready";
   logs: string[];
   url?: string;
   error?: string;
@@ -28,14 +29,16 @@ export default function Deploy() {
   const { id } = useParams<{ id: string }>();
   const [status, setStatus] = useState<DeployStatus | null>(null);
   const [polling, setPolling] = useState(true);
-  const { toast } = useToast();
 
   useEffect(() => {
     if (!id) return;
     
     const poll = async () => {
       try {
-        const response = await fetch(`/api/status/${id}`);
+        const { data: { session } } = await supabase.auth.getSession();
+        const response = await fetch(`/api/status/${id}`, {
+          headers: { Authorization: `Bearer ${session?.access_token}` }
+        });
         const data = await response.json();
         setStatus(data);
         
@@ -59,21 +62,25 @@ export default function Deploy() {
     setPolling(true);
     
     try {
+      const { data: { session } } = await supabase.auth.getSession();
       await fetch(`/api/deploy`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session?.access_token}`
+        },
         body: JSON.stringify({ appId: id }),
       });
-      toast({ title: "Redeployment started" });
+      toast.success("Redeployment started");
     } catch (error) {
-      toast({ title: "Failed to redeploy", variant: "destructive" });
+      toast.error("Failed to redeploy");
     }
   };
 
   const copyUrl = () => {
     if (status?.url) {
       navigator.clipboard.writeText(status.url);
-      toast({ title: "URL copied" });
+      toast.success("URL copied");
     }
   };
 
@@ -102,6 +109,7 @@ export default function Deploy() {
             variant="outline" 
             className={
               status.status === "deployed" ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" :
+              status.status === "ready" ? "bg-blue-500/20 text-blue-400 border-blue-500/30" :
               status.status === "failed" ? "bg-red-500/20 text-red-400 border-red-500/30" :
               "bg-amber-500/20 text-amber-400 border-amber-500/30"
             }
@@ -136,7 +144,7 @@ export default function Deploy() {
                   <Button asChild className="w-full bg-violet-600 hover:bg-violet-500">
                     <a href={status.url} target="_blank" rel="noopener noreferrer">
                       <Globe className="w-4 h-4 mr-2" />
-                      Open App
+                      Open Automation
                     </a>
                   </Button>
                 )}

@@ -74,8 +74,8 @@ export class OpenRouterProvider implements AIProvider {
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`,
-        "HTTP-Referer": "https://zo.space",
-        "X-Title": "Zo AI App Builder"
+        "HTTP-Referer": "https://autoai.space",
+        "X-Title": "AutoAI Automation Builder"
       },
       body: JSON.stringify({
         model: model || "anthropic/claude-3.5-sonnet",
